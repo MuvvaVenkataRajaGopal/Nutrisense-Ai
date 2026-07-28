@@ -1,0 +1,185 @@
+// ==========================================
+// 1. DEPENDENCIES & INITIALIZATION
+// ==========================================
+// Installation required: npm install express mongoose cors
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+// Connect to local MongoDB instance
+mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/nutrition_assistant', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('MongoDB Connected Successfully'))
+.catch(err => console.error('MongoDB Connection Error:', err));
+
+// ==========================================
+// 2. MONGOOSE SCHEMAS & MODELS
+// ==========================================
+
+// User Profile Schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  age: Number,
+  weight: Number, // in kg
+  height: Number, // in cm
+  gender: { type: String, enum: ['male', 'female', 'other'], default: 'male' },
+  activityLevel: { type: String, default: 'moderate' }
+});
+const User = mongoose.model('User', userSchema);
+
+// Food Item Schema
+const foodItemSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  servingSize: { type: String, default: '1 serving' },
+  calories: { type: Number, required: true },
+  protein: { type: Number, required: true },
+  carbs: { type: Number, required: true },
+  fat: { type: Number, required: true }
+});
+const FoodItem = mongoose.model('FoodItem', foodItemSchema);
+
+// Consumption Log Schema
+const consumptionLogSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  foodItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'FoodItem', required: true },
+  quantity: { type: Number, required: true, default: 1 },
+  mealType: { type: String, enum: ['Breakfast', 'Lunch', 'Dinner', 'Snack'], default: 'Snack' },
+  loggedAt: { type: Date, default: Date.now }
+});
+const ConsumptionLog = mongoose.model('ConsumptionLog', consumptionLogSchema);
+
+// Diet Plan Schema
+const dietPlanSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  goal: { type: String, enum: ['loss', 'maintenance', 'gain'], required: true },
+  targetCalories: { type: Number, required: true },
+  targetProtein: { type: Number, required: true },
+  targetCarbs: { type: Number, required: true },
+  targetFat: { type: Number, required: true }
+});
+const DietPlan = mongoose.model('DietPlan', dietPlanSchema);
+
+// ==========================================
+// 3. REST API ENDPOINTS
+// ==========================================
+
+// Register or Update User Profile
+app.post('/api/users', async (req, res) => {
+  try {
+    const user = await User.findOneAndUpdate({ email: req.body.email }, req.body, { upsert: true, new: true });
+    res.status(200).json(user);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Add Food Item
+app.post('/api/foods', async (req, res) => {
+  try {
+    const food = new FoodItem(req.body);
+    const savedFood = await food.save();
+    res.status(201).json(savedFood);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get All Food Items
+app.get('/api/foods', async (req, res) => {
+  try {
+    const foods = await FoodItem.find();
+    res.json(foods);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Log Food Consumption Entry
+app.post('/api/logs', async (req, res) => {
+  try {
+    const { userId, foodItemId, quantity, mealType } = req.body;
+    const log = new ConsumptionLog({ userId, foodItemId, quantity, mealType });
+    const savedLog = await log.save();
+    res.status(201).json(savedLog);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Fetch Daily Summary & Analysis
+app.get('/api/analysis/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const logs = await ConsumptionLog.find({
+      userId,
+      loggedAt: { $gte: startOfDay }
+    }).populate('foodItemId');
+
+    let totals = { calories: 0, protein: 0, carbs: 0, fat: 0 };
+    logs.forEach(log => {
+      if (log.foodItemId) {
+        totals.calories += log.foodItemId.calories * log.quantity;
+        totals.protein += log.foodItemId.protein * log.quantity;
+        totals.carbs += log.foodItemId.carbs * log.quantity;
+        totals.fat += log.foodItemId.fat * log.quantity;
+      }
+    });
+
+    const activePlan = await DietPlan.findOne({ userId });
+    res.json({ logs, totals, plan: activePlan });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// 4. HTML INTERFACE ROUTE
+// ==========================================
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Nutrition Assistant API & Interface</title>
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; padding: 2rem; max-width: 900px; margin: auto; }
+        h1 { color: #2563eb; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .endpoint { font-family: monospace; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; }
+        .method { font-weight: bold; color: #059669; }
+      </style>
+    </head>
+    <body>
+      <h1>Nutrition Assistant Backend Server</h1>
+      <p>The Express.js REST API is running and connected to MongoDB.</p>
+      
+      <div class="card">
+        <h2>Available API Endpoints</h2>
+        <ul>
+          <li><span class="method">POST</span> <span class="endpoint">/api/users</span> - Register or update profile</li>
+          <li><span class="method">GET</span> <span class="endpoint">/api/foods</span> - Retrieve food database</li>
+          <li><span class="method">POST</span> <span class="endpoint">/api/foods</span> - Add new food item</li>
+          <li><span class="method">POST</span> <span class="endpoint">/api/logs</span> - Log daily food intake</li>
+          <li><span class="method">GET</span> <span class="endpoint">/api/analysis/:userId</span> - Get today's nutritional summary</li>
+        </ul>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// Start Server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server executing on http://localhost:${PORT}`));
